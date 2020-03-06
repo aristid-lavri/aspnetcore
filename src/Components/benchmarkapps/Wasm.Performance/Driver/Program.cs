@@ -30,6 +30,7 @@ namespace Wasm.Performance.Driver
             // we'll pass in the duration to execute the runs in milliseconds. This will cause this driver
             // to repeat executions for the duration specified.
             var stressRunCancellation = new CancellationToken(canceled: true);
+            var isStressRun = false;
             if (args.Length > 0)
             {
                 if (!int.TryParse(args[0], out var stressRunSeconds))
@@ -40,6 +41,8 @@ namespace Wasm.Performance.Driver
 
                 if (stressRunSeconds > 0)
                 {
+                    isStressRun = true;
+
                     var stressRunDuration = TimeSpan.FromSeconds(stressRunSeconds);
                     Console.WriteLine($"Stress run duration: {stressRunDuration}.");
                     stressRunCancellation = new CancellationTokenSource(stressRunDuration).Token;
@@ -80,14 +83,14 @@ namespace Wasm.Performance.Driver
 
                 FormatAsBenchmarksOutput(results,
                     includeMetadata: first,
-                    includeStressRunDelimiter: !stressRunCancellation.IsCancellationRequested);
+                    isStressRun: isStressRun);
             } while (!stressRunCancellation.IsCancellationRequested);
 
             Console.WriteLine("Done executing benchmark");
             return 0;
         }
 
-        private static void FormatAsBenchmarksOutput(BenchmarkResult benchmarkResult, bool includeMetadata, bool includeStressRunDelimiter)
+        private static void FormatAsBenchmarksOutput(BenchmarkResult benchmarkResult, bool includeMetadata, bool isStressRun)
         {
             // Sample of the the format: https://github.com/aspnet/Benchmarks/blob/e55f9e0312a7dd019d1268c1a547d1863f0c7237/src/Benchmarks/Program.cs#L51-L67
             var output = new BenchmarkOutput();
@@ -150,7 +153,7 @@ namespace Wasm.Performance.Driver
                 output.Metadata.Clear();
             }
 
-            if (includeStressRunDelimiter)
+            if (isStressRun)
             {
                 output.Measurements.Add(new BenchmarkMeasurement
                 {
