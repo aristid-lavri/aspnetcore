@@ -268,6 +268,7 @@ namespace Microsoft.AspNetCore.Components.E2ETest.ServerExecutionTests
         }
 
         [Theory]
+        [QuarantinedTest("https://github.com/dotnet/aspnetcore/issues/19666")]
         [InlineData("constructor-throw")]
         [InlineData("attach-throw")]
         [InlineData("setparameters-sync-throw")]
