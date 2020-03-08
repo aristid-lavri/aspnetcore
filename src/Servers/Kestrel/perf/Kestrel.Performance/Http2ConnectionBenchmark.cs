@@ -54,7 +54,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
                 Log = new KestrelTrace(NullLogger.Instance),
                 SystemClock = new MockSystemClock()
             };
-            serviceContext.ServerOptions.Limits.Http2.MaxStreamsPerConnection = int.MaxValue;
             serviceContext.DateHeaderValueManager.OnHeartbeat(default);
 
             _connection = new Http2Connection(new HttpConnectionContext
