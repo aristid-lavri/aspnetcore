@@ -1,13 +1,9 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
-using System;
 using System.Buffers;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Linq;
-using System.Net.Http.HPack;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
 using Microsoft.AspNetCore.Http;
@@ -76,7 +72,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
 
             _currentStreamId = 1;
 
-            _ = _connection.ProcessRequestsAsync(new DummyApplication(_ => Task.CompletedTask, new ReuseHttpContextFactory()));
+            _ = _connection.ProcessRequestsAsync(new DummyApplication(_ => Task.CompletedTask, new MockHttpContextFactory()));
 
             _connectionPair.Application.Output.Write(Http2Connection.ClientPreface);
             _connectionPair.Application.Output.WriteSettings(new Http2PeerSettings());
@@ -101,41 +97,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
         {
             _connectionPair.Application.Output.Complete();
             _memoryPool?.Dispose();
-        }
-    }
-
-    public class ReuseHttpContextFactory : IHttpContextFactory
-    {
-        private readonly object _lock = new object();
-        private readonly List<DefaultHttpContext> _cache = new List<DefaultHttpContext>();
-
-        public HttpContext Create(IFeatureCollection featureCollection)
-        {
-            DefaultHttpContext httpContext;
-
-            lock (_lock)
-            {
-                if (_cache.Count > 0)
-                {
-                    httpContext = _cache[_cache.Count - 1];
-                    _cache.RemoveAt(_cache.Count - 1);
-                }
-                else
-                {
-                    httpContext = new DefaultHttpContext();
-                }
-            }
-
-            httpContext.Initialize(featureCollection);
-            return httpContext;
-        }
-
-        public void Dispose(HttpContext httpContext)
-        {
-            lock (_lock)
-            {
-                _cache.Add((DefaultHttpContext)httpContext);
-            }
         }
     }
 }
