@@ -34,6 +34,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
         private readonly Pipe _pipe;
         private readonly ConcurrentPipeWriter _pipeWriter;
         private readonly PipeReader _pipeReader;
+        private IMemoryOwner<byte> _fakeMemoryOwner;
         private bool _startedWritingDataFrames;
         private bool _streamCompleted;
         private bool _suffixSent;
@@ -45,17 +46,15 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
         internal ValueTask _dataWriteProcessingTask;
 
         /// <summary>The core logic for the IValueTaskSource implementation.</summary>
-        private ManualResetValueTaskSourceCore<FlushResult> _waitSource = new ManualResetValueTaskSourceCore<FlushResult> { RunContinuationsAsynchronously = true }; // mutable struct, do not make this readonly
+        private ManualResetValueTaskSourceCore<FlushResult> _responseCompleteWaitSource = new ManualResetValueTaskSourceCore<FlushResult> { RunContinuationsAsynchronously = true }; // mutable struct, do not make this readonly
 
         // This object is itself usable as a backing source for ValueTask.  Since there's only ever one awaiter
         // for this object's state transitions at a time, we allow the object to be awaited directly. All functionality
         // associated with the implementation is just delegated to the ManualResetValueTaskSourceCore.
-        private ValueTask<FlushResult> GetWaiterTask() => new ValueTask<FlushResult>(this, _waitSource.Version);
-        ValueTaskSourceStatus IValueTaskSource<FlushResult>.GetStatus(short token) => _waitSource.GetStatus(token);
-        void IValueTaskSource<FlushResult>.OnCompleted(Action<object> continuation, object state, short token, ValueTaskSourceOnCompletedFlags flags) => _waitSource.OnCompleted(continuation, state, token, flags);
-        FlushResult IValueTaskSource<FlushResult>.GetResult(short token) => _waitSource.GetResult(token);
-
-        private IMemoryOwner<byte> _fakeMemoryOwner;
+        private ValueTask<FlushResult> GetWaiterTask() => new ValueTask<FlushResult>(this, _responseCompleteWaitSource.Version);
+        ValueTaskSourceStatus IValueTaskSource<FlushResult>.GetStatus(short token) => _responseCompleteWaitSource.GetStatus(token);
+        void IValueTaskSource<FlushResult>.OnCompleted(Action<object> continuation, object state, short token, ValueTaskSourceOnCompletedFlags flags) => _responseCompleteWaitSource.OnCompleted(continuation, state, token, flags);
+        FlushResult IValueTaskSource<FlushResult>.GetResult(short token) => _responseCompleteWaitSource.GetResult(token);
 
         public Http2OutputProducer(Http2Stream stream, Http2StreamContext context, StreamOutputFlowControl flowControl)
         {
@@ -88,7 +87,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             _streamCompleted = false;
             _writerComplete = false;
 
-            _waitSource.Reset();
+            _responseCompleteWaitSource.Reset();
         }
 
         public void Complete()
@@ -448,24 +447,18 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
 
                 _pipeReader.Complete();
 
-                _waitSource.SetResult(flushResult);
+                _responseCompleteWaitSource.SetResult(flushResult);
 
-                try
+                if (readResult.IsCompleted)
                 {
-                    if (readResult.IsCompleted)
-                    {
-                        _pipe.Reset();
-                        _pipeWriter.Reset();
-                    }
-                    else
-                    {
-                        break;
-                    }
+                    // Reset pipe for reuse.
+                    _pipe.Reset();
+                    _pipeWriter.Reset();
                 }
-                catch (Exception ex)
+                else
                 {
-
-                    throw ex;
+                    // Stream was aborted.
+                    break;
                 }
 
             } while (!_disposed);
