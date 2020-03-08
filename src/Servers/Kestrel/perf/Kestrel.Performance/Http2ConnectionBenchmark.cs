@@ -3,8 +3,10 @@
 
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO.Pipelines;
+using System.Linq;
 using System.Net.Http.HPack;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
@@ -25,12 +27,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
     public class Http2ConnectionBenchmark
     {
         private MemoryPool<byte> _memoryPool;
-        private Pipe _pipe;
         private HttpRequestHeaders _httpRequestHeaders;
         private Http2Connection _connection;
         private Http2HeadersEnumerator _requestHeadersEnumerator;
         private int _currentStreamId;
         private byte[] _headersBuffer;
+        private DuplexPipe.DuplexPipePair _connectionPair;
 
         [GlobalSetup]
         public void GlobalSetup()
@@ -38,7 +40,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
             _memoryPool = SlabMemoryPoolFactory.Create();
 
             var options = new PipeOptions(_memoryPool, readerScheduler: PipeScheduler.Inline, writerScheduler: PipeScheduler.Inline, useSynchronizationContext: false);
-            _pipe = new Pipe(options);
+
+            _connectionPair = DuplexPipe.CreateConnectionPair(options, options);
 
             _httpRequestHeaders = new HttpRequestHeaders();
             _httpRequestHeaders.Append(HeaderNames.Method, new StringValues("GET"));
@@ -62,8 +65,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
             {
                 MemoryPool = _memoryPool,
                 ConnectionId = "TestConnectionId",
-                Protocols = Core.HttpProtocols.Http2,
-                Transport = new MockDuplexPipe(_pipe.Reader, new NullPipeWriter()),
+                Protocols = HttpProtocols.Http2,
+                Transport = _connectionPair.Transport,
                 ServiceContext = serviceContext,
                 ConnectionFeatures = new FeatureCollection(),
                 TimeoutControl = new MockTimeoutControl(),
@@ -73,11 +76,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
 
             _currentStreamId = 1;
 
-            _ = _connection.ProcessRequestsAsync(new DummyApplication());
+            _ = _connection.ProcessRequestsAsync(new DummyApplication(_ => Task.CompletedTask, new ReuseHttpContextFactory()));
 
-            _pipe.Writer.Write(Http2Connection.ClientPreface);
-            _pipe.Writer.WriteSettings(new Http2PeerSettings());
-            _pipe.Writer.FlushAsync().GetAwaiter().GetResult();
+            _connectionPair.Application.Output.Write(Http2Connection.ClientPreface);
+            _connectionPair.Application.Output.WriteSettings(new Http2PeerSettings());
+            _connectionPair.Application.Output.FlushAsync().GetAwaiter().GetResult();
         }
 
         [Benchmark]
@@ -85,16 +88,54 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
         {
             _requestHeadersEnumerator.Initialize(_httpRequestHeaders);
             _requestHeadersEnumerator.MoveNext();
-            _pipe.Writer.WriteStartStream(streamId: _currentStreamId, _requestHeadersEnumerator, _headersBuffer, endStream: true);
+            _connectionPair.Application.Output.WriteStartStream(streamId: _currentStreamId, _requestHeadersEnumerator, _headersBuffer, endStream: true);
             _currentStreamId += 2;
-            await _pipe.Writer.FlushAsync();
+            await _connectionPair.Application.Output.FlushAsync();
+
+            var readResult = await _connectionPair.Application.Input.ReadAsync();
+            _connectionPair.Application.Input.AdvanceTo(readResult.Buffer.End);
         }
 
         [GlobalCleanup]
         public void Dispose()
         {
-            _pipe.Writer.Complete();
+            _connectionPair.Application.Output.Complete();
             _memoryPool?.Dispose();
+        }
+    }
+
+    public class ReuseHttpContextFactory : IHttpContextFactory
+    {
+        private readonly object _lock = new object();
+        private readonly List<DefaultHttpContext> _cache = new List<DefaultHttpContext>();
+
+        public HttpContext Create(IFeatureCollection featureCollection)
+        {
+            DefaultHttpContext httpContext;
+
+            lock (_lock)
+            {
+                if (_cache.Count > 0)
+                {
+                    httpContext = _cache[_cache.Count - 1];
+                    _cache.RemoveAt(_cache.Count - 1);
+                }
+                else
+                {
+                    httpContext = new DefaultHttpContext();
+                }
+            }
+
+            httpContext.Initialize(featureCollection);
+            return httpContext;
+        }
+
+        public void Dispose(HttpContext httpContext)
+        {
+            lock (_lock)
+            {
+                _cache.Add((DefaultHttpContext)httpContext);
+            }
         }
     }
 }
